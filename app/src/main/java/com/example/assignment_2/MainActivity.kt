@@ -4,15 +4,12 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
-import androidx.compose.material3.Button
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextField
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.*
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
@@ -29,29 +26,25 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun FlightTrackerApp() {
     var flightNumber by remember { mutableStateOf("") }
-    var flightInfo by remember { mutableStateOf("Enter a flight number (callsign) and press 'Track Flight'") }
+    var flightInfo by remember { mutableStateOf("Enter flight number and track") }
     val scope = rememberCoroutineScope()
 
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
+        modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.Center
     ) {
         TextField(
             value = flightNumber,
             onValueChange = { flightNumber = it },
-            label = { Text("Flight Number (Callsign)") },
+            label = { Text("Flight Number") },
             modifier = Modifier.fillMaxWidth()
         )
         Spacer(modifier = Modifier.height(8.dp))
         Button(
             onClick = {
-                if (flightNumber.isNotBlank()) {
-                    scope.launch(Dispatchers.IO) {
-                        val data = fetchOpenSkyFlightData(flightNumber)
-                        // Update UI on the main thread
-                        flightInfo = data ?: "Flight not found or API error"
+                if (flightNumber.isNotEmpty()) {
+                    scope.launch {
+                        flightInfo = fetchFlightData(flightNumber)
                     }
                 } else {
                     flightInfo = "Please enter a valid flight number"
@@ -66,45 +59,83 @@ fun FlightTrackerApp() {
     }
 }
 
-fun fetchOpenSkyFlightData(flightNumber: String): String? {
-    val url = "https://opensky-network.org/api/states/all"
+suspend fun fetchFlightData(flightNumber: String): String {
+    val apiKey = "bf81ba651f87b9118d67fa562155951b" // Store securely in local.properties
+    val url = "https://api.aviationstack.com/v1/flights?access_key=$apiKey&flight_iata=$flightNumber"
     val client = OkHttpClient()
     val request = Request.Builder().url(url).build()
 
-    return try {
-        val response = client.newCall(request).execute()
-        val responseBody = response.body?.string()
-        if (!response.isSuccessful || responseBody.isNullOrEmpty()) return "Invalid flight data"
+    return withContext(Dispatchers.IO) {
+        try {
+            val response = client.newCall(request).execute()
+            val responseBody = response.body?.string() ?: return@withContext "Invalid flight data"
 
-        val jsonResponse = JSONObject(responseBody)
-        val statesArray = jsonResponse.getJSONArray("states")
+            if (!response.isSuccessful) return@withContext "API error: ${response.code}"
 
-        // Iterate over state vectors and look for a callsign that matches the flight number.
-        for (i in 0 until statesArray.length()) {
-            val state = statesArray.getJSONArray(i)
-            val callsign = state.optString(1)?.trim()?.uppercase() ?: ""
-            if (callsign.contains(flightNumber.trim().uppercase())) {
-                // Extract relevant flight data
-                val originCountry = state.optString(2, "N/A")
-                val longitude = state.optDouble(5, Double.NaN)
-                val latitude = state.optDouble(6, Double.NaN)
-                val altitude = state.optDouble(7, Double.NaN)
-                val velocity = state.optDouble(9, Double.NaN)
-                val onGround = state.optBoolean(8, false)
+            val jsonObject = JSONObject(responseBody)
+            val dataArray = jsonObject.optJSONArray("data") ?: return@withContext "No flight data available"
 
-                return """
-                    Flight: $callsign
-                    Origin Country: $originCountry
-                    Location: Lat $latitude, Lon $longitude
-                    Altitude: ${if (altitude.isNaN()) "N/A" else altitude}
-                    Velocity: ${if (velocity.isNaN()) "N/A" else velocity}
-                    On Ground: $onGround
-                """.trimIndent()
-            }
+            if (dataArray.length() == 0) return@withContext "No flight data available"
+
+            val flight = dataArray.getJSONObject(0)
+
+            // Extracting detailed information
+            val flightStatus = flight.optString("flight_status", "Unknown")
+            val airline = flight.optJSONObject("airline")?.optString("name", "Unknown") ?: "Unknown"
+            val flightIATA = flight.optString("flight_iata", "Unknown")
+
+            val departure = flight.optJSONObject("departure")
+            val depAirport = departure?.optString("airport", "Unknown") ?: "Unknown"
+            val depTime = departure?.optString("estimated", "Unknown") ?: "Unknown"
+            val depTerminal = departure?.optString("terminal", "Unknown") ?: "Unknown"
+            val depGate = departure?.optString("gate", "Unknown") ?: "Unknown"
+            val depDelay = departure?.optString("delay", "0") ?: "0"
+
+            val arrival = flight.optJSONObject("arrival")
+            val arrAirport = arrival?.optString("airport", "Unknown") ?: "Unknown"
+            val arrTime = arrival?.optString("estimated", "Unknown") ?: "Unknown"
+            val arrTerminal = arrival?.optString("terminal", "Unknown") ?: "Unknown"
+            val arrGate = arrival?.optString("gate", "Unknown") ?: "Unknown"
+            val arrBaggage = arrival?.optString("baggage", "Unknown") ?: "Unknown"
+
+            // Live Tracking Data
+            val liveData = flight.optJSONObject("live")
+            val altitude = liveData?.optString("altitude", "Unknown") ?: "Unknown"
+            val latitude = liveData?.optString("latitude", "Unknown") ?: "Unknown"
+            val longitude = liveData?.optString("longitude", "Unknown") ?: "Unknown"
+            val speed = liveData?.optString("speed_horizontal", "Unknown") ?: "Unknown"
+            val verticalSpeed = liveData?.optString("speed_vertical", "Unknown") ?: "Unknown"
+            val heading = liveData?.optString("direction", "Unknown") ?: "Unknown"
+
+            // Formatting Output
+            """
+            ✈️ Flight Information:
+            ───────────────────────────
+            📌 Flight: $airline ($flightIATA)
+            🚦 Status: $flightStatus
+            
+            🛫 Departure:
+            📍 Airport: $depAirport
+            ⏳ Estimated Time: $depTime
+            🏢 Terminal: $depTerminal | 🚪 Gate: $depGate
+            ⏳ Delay: ${if (depDelay != "0") "$depDelay minutes" else "No delay"}
+            
+            🛬 Arrival:
+            📍 Airport: $arrAirport
+            ⏳ Estimated Time: $arrTime
+            🏢 Terminal: $arrTerminal | 🚪 Gate: $arrGate
+            🎒 Baggage Claim: $arrBaggage
+            
+            🌍 Live Flight Tracking:
+            ───────────────────────────
+            📍 Latitude: $latitude | 📍 Longitude: $longitude
+            📏 Altitude: ${altitude}m
+            🚀 Speed: ${speed} km/h | 🛗 Vertical Speed: ${verticalSpeed} m/s
+            🧭 Heading: $heading°
+            """.trimIndent()
+        } catch (e: Exception) {
+            "Error fetching flight data"
         }
-        "No matching flight found for: $flightNumber"
-    } catch (e: Exception) {
-        "Error fetching flight data: ${e.localizedMessage}"
     }
 }
 
